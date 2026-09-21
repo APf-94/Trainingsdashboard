@@ -88,7 +88,7 @@ tab1, tab2, tab3 = st.tabs(["📅 PMC & Kalender", "📈 FIT-File Analyse", "⚙
 # ==========================================
 with tab1:
     if not api_key:
-        st.info("👉 Bitte gib in der Seitenleiste deinen Intervals API Key ein, um den Kalender und PMC zu laden.")
+        st.info("👉 Bitte gib in der Seitenleiste deinen Intervals API Key ein.")
     else:
         today = date.today()
         start_week = today - timedelta(days=today.weekday())
@@ -99,40 +99,11 @@ with tab1:
         activities_past = get_intervals_activities(start_90d.isoformat(), today.isoformat(), api_key, athlete_id)
         planned_events = get_gcal_events(gcal_url, start_week, end_week)
 
-        # Metriken Header
-        if profile:
-            ftp = profile.get("icu_ftp", user_ftp)
-            w_kg = round(ftp / user_weight, 2)
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("FTP (Intervals)", f"{ftp} W", f"{w_kg} W/kg")
-            c2.metric("Gewicht", f"{profile.get('icu_weight', user_weight)} kg")
-            c3.metric("Fitness (CTL)", profile.get("icu_ctl", 0))
-            c4.metric("Ermüdung (ATL)", profile.get("icu_atl", 0))
-            c5.metric("Form (TSB)", profile.get("icu_tsb", 0))
-            st.markdown("---")
+        # 1. Aktivitäten & PMC aufbereiten (Aktuelle CTL/ATL/TSB ermitteln)
+        df_act = pd.DataFrame()
+        df_pmc = pd.DataFrame()
+        current_ctl, current_atl, current_tsb = 0, 0, 0
 
-        # Wochenübersicht
-        st.subheader(f"Woche: {start_week.strftime('%d.%m.')} – {end_week.strftime('%d.%m.%Y')}")
-        col_plan, col_done = st.columns(2)
-        with col_plan:
-            st.markdown("#### 📝 Geplant (Google Kalender)")
-            if planned_events:
-                for ev in planned_events:
-                    st.markdown(f"* **{ev['Datum'].strftime('%a, %d.%m.')}:** {ev['Titel']} `({ev['Dauer (Min)']} min)`")
-            else:
-                st.write("Keine GCal-Termine diese Woche.")
-        with col_done:
-            st.markdown("#### ✅ Absolviert (Garmin)")
-            week_acts = [a for a in activities_past if pd.to_datetime(a.get("start_date_local")).date() >= start_week]
-            if week_acts:
-                for act in sorted(week_acts, key=lambda x: x.get("start_date_local")):
-                    d = pd.to_datetime(act.get("start_date_local")).strftime('%a, %d.%m.')
-                    st.markdown(f"* **{d}:** {act.get('name')} `({round((act.get('moving_time') or 0)/60)} min, {round(act.get('icu_training_load') or 0)} TSS)`")
-            else:
-                st.write("Noch keine Aktivitäten aufgezeichnet.")
-        st.markdown("---")
-
-        # Auswertungen & PMC
         if activities_past:
             df_act = pd.DataFrame([{
                 "Datum": pd.to_datetime(a.get("start_date_local")),
@@ -145,28 +116,81 @@ with tab1:
             } for a in activities_past]).sort_values("Datum")
             
             df_pmc = df_act.dropna(subset=["CTL", "ATL"]).copy()
-            df_pmc["TSB"] = df_pmc["CTL"] - df_pmc["ATL"]
+            if not df_pmc.empty:
+                df_pmc["TSB"] = df_pmc["CTL"] - df_pmc["ATL"]
+                # Aktuellste Werte der jüngsten Aktivität nehmen
+                latest_row = df_pmc.iloc[-1]
+                current_ctl = round(latest_row["CTL"])
+                current_atl = round(latest_row["ATL"])
+                current_tsb = round(latest_row["TSB"])
 
-            st.subheader("Auswertung & Formaufbau")
+        # 2. Metriken Header
+        ftp = profile.get("icu_ftp", user_ftp) if profile else user_ftp
+        w_kg = round(ftp / user_weight, 2)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("FTP (Intervals)", f"{ftp} W", f"{w_kg} W/kg")
+        c2.metric("Gewicht", f"{profile.get('icu_weight', user_weight) if profile else user_weight} kg")
+        c3.metric("Fitness (CTL)", current_ctl)
+        c4.metric("Ermüdung (ATL)", current_atl)
+        c5.metric("Form (TSB)", current_tsb)
+        st.markdown("---")
+
+        # 3. Wochenübersicht: Geplant vs. Absolviert
+        st.subheader(f"Woche: {start_week.strftime('%d.%m.')} – {end_week.strftime('%d.%m.%Y')}")
+        col_plan, col_done = st.columns(2)
+        
+        with col_plan:
+            st.markdown("#### 📝 Geplant (Google Kalender via iCal)")
+            if planned_events:
+                for ev in planned_events:
+                    wochentag = ev["Datum"].strftime('%a, %d.%m.')
+                    st.markdown(f"* **{wochentag}:** {ev['Titel']} `({ev['Dauer (Min)']} min)`")
+            else:
+                st.write("Keine Google-Kalender-Termine für diese Woche gefunden.")
+                st.caption("Stelle sicher, dass links die geheime '.ics'-Adresse eingetragen ist.")
+
+        with col_done:
+            st.markdown("#### ✅ Absolviert (Garmin)")
+            week_acts = [a for a in activities_past if pd.to_datetime(a.get("start_date_local")).date() >= start_week]
+            if week_acts:
+                for act in sorted(week_acts, key=lambda x: x.get("start_date_local")):
+                    d = pd.to_datetime(act.get("start_date_local")).strftime('%a, %d.%m.')
+                    typ = act.get("type", "Sport")
+                    dur = round((act.get("moving_time") or 0) / 60)
+                    load = act.get("icu_training_load") or 0
+                    st.markdown(f"* **{d}:** {act.get('name')} `({typ}, {dur} min, {round(load)} TSS)`")
+            else:
+                st.write("Diese Woche noch keine Aktivitäten aufgezeichnet.")
+        st.markdown("---")
+
+        # 4. Auswertungen & PMC
+        if not df_act.empty:
+            st.subheader("📊 Auswertung & Formaufbau")
+            
+            # KPIs letzte 7 Tage
             last_7d = df_act[df_act["Datum"] >= pd.to_datetime(today - timedelta(days=7))]
             cx1, cx2, cx3 = st.columns(3)
-            cx1.metric("Trainingszeit (7T)", f"{round(last_7d['Dauer_h'].sum(), 1)} h")
-            cx2.metric("Energieumsatz (7T)", f"{int(last_7d['kJ'].sum())} kJ")
-            cx3.metric("TSS (7T)", int(last_7d['TSS'].sum()))
+            cx1.metric("Trainingszeit (letzte 7T)", f"{round(last_7d['Dauer_h'].sum(), 1)} h")
+            cx2.metric("Energieumsatz Rad", f"{int(last_7d['kJ'].sum()):,} kJ".replace(",", "."))
+            cx3.metric("Absolvierter TSS", int(last_7d['TSS'].sum()))
             
             col_chart1, col_chart2 = st.columns([1, 2])
             with col_chart1:
                 sport_split = last_7d.groupby("Typ")["Dauer_h"].sum().reset_index()
-                fig_bar = go.Figure(go.Bar(x=sport_split["Typ"], y=sport_split["Dauer_h"], text=[f"{v} h" for v in sport_split["Dauer_h"]], textposition="auto"))
+                fig_bar = go.Figure(go.Bar(
+                    x=sport_split["Typ"], y=sport_split["Dauer_h"], 
+                    text=[f"{v} h" for v in sport_split["Dauer_h"]], textposition="auto",
+                    marker_color=["#3498db", "#2ecc71", "#e67e22", "#9b59b6"]
+                ))
                 fig_bar.update_layout(title="Sportarten (7T)", yaxis_title="Stunden", template="plotly_white", height=320, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_chart2:
                 fig_pmc = go.Figure()
-                fig_pmc.add_trace(go.Scatter(x=df_pmc["Datum"], y=df_pmc["CTL"], name="CTL", line=dict(color="#2980b9", width=2)))
-                fig_pmc.add_trace(go.Scatter(x=df_pmc["Datum"], y=df_pmc["ATL"], name="ATL", line=dict(color="#e74c3c", width=1.5, dash="dot")))
-                fig_pmc.add_trace(go.Scatter(x=df_pmc["Datum"], y=df_pmc["TSB"], name="TSB", line=dict(color="#27ae60", width=1.5)))
-                fig_pmc.update_layout(title="PMC (90 Tage)", hovermode="x unified", template="plotly_white", height=320, margin=dict(l=0, r=0, t=30, b=0))
+                fig_pmc.add_trace(go.Scatter(x=df_pmc["Datum"], y=df_pmc["CTL"], name="Fitness (CTL)", line=dict(color="#2980b9", width=2)))
+                fig_pmc.add_trace(go.Scatter(x=df_pmc["Datum"], y=df_pmc["ATL"], name="Ermüdung (ATL)", line=dict(color="#e74c3c", width=1.5, dash="dot")))
+                fig_pmc.add_trace(go.Scatter(x=df_pmc["Datum"], y=df_pmc["TSB"], name="Form (TSB)", line=dict(color="#27ae60", width=1.5)))
+                fig_pmc.update_layout(title="Performance Management Chart (90T)", hovermode="x unified", yaxis_title="Load", template="plotly_white", height=320, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_pmc, use_container_width=True)
 
 # ==========================================
