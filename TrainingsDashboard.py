@@ -10,18 +10,23 @@ from fitparse import FitFile
 
 st.set_page_config(page_title="Trainings-Cockpit 2027", layout="wide", page_icon="🚴‍♂️")
 
-# --- 1. SEITENLEISTE: VERBINDUNGEN & ATHLETENDATEN ---
-st.sidebar.header("🔑 Verbindungen")
-api_key = st.sidebar.text_input("Intervals API Key", type="password")
-athlete_id = st.sidebar.text_input("Intervals Athlete ID", value="0")
-gcal_url = st.sidebar.text_input("Google Kalender iCal URL", type="password")
+# --- 1. VERBINDUNGEN AUS CLOUD-SECRETS LADEN ---
+st.sidebar.header("⚙️ Status")
+
+# Prüfen, ob Secrets in der Streamlit Cloud hinterlegt sind
+if "INTERVALS_API" in st.secrets and "GCAL_LINK" in st.secrets:
+    api_key = st.secrets["INTERVALS_API"]
+    athlete_id = str(st.secrets.get("INTERVALS_ID", "0"))
+    gcal_url = st.secrets["GCAL_LINK"]
+    st.sidebar.success("✅ Angemeldet (Secrets aktiv)")
+else:
+    st.error("❌ Keine Secrets gefunden! Bitte trage INTERVALS_API, INTERVALS_ID und GCAL_LINK in den Streamlit App-Settings ein.")
+    st.stop()  # Stoppt das Skript hier, damit keine Fehler nach unten durchlaufen
 
 st.sidebar.markdown("---")
 st.sidebar.header("👤 Athletendaten")
-st.sidebar.caption("Wird für FIT-Analyse & Zonen benötigt")
 user_weight = st.sidebar.number_input("Gewicht (kg)", value=84.0, step=0.5)
 user_ftp = st.sidebar.number_input("FTP (Watt)", value=271, step=1)
-user_max_hr = st.sidebar.number_input("Max HR (bpm)", value=198, step=1)
 
 # --- 2. API HELPER FUNKTIONEN ---
 @st.cache_data(ttl=300)
