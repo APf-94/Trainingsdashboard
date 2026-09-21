@@ -94,12 +94,16 @@ with tab1:
         start_week = today - timedelta(days=today.weekday())
         end_week = start_week + timedelta(days=6)
         start_90d = today - timedelta(days=90)
+        start_year = date(today.year, 1, 1)
+
+        # Ladezeitraum: mindestens ab 1. Januar oder 90 Tage zurück
+        start_fetch = min(start_90d, start_year)
 
         profile = get_athlete_profile(api_key, athlete_id)
-        activities_past = get_intervals_activities(start_90d.isoformat(), today.isoformat(), api_key, athlete_id)
+        activities_past = get_intervals_activities(start_fetch.isoformat(), today.isoformat(), api_key, athlete_id)
         planned_events = get_gcal_events(gcal_url, start_week, end_week)
 
-        # 1. Aktivitäten & PMC aufbereiten (Aktuelle CTL/ATL/TSB ermitteln)
+        # 1. Aktivitäten aufbereiten & PMC berechnen
         df_act = pd.DataFrame()
         df_pmc = pd.DataFrame()
         current_ctl, current_atl, current_tsb = 0, 0, 0
@@ -115,10 +119,10 @@ with tab1:
                 "ATL": a.get("icu_atl")
             } for a in activities_past]).sort_values("Datum")
             
-            df_pmc = df_act.dropna(subset=["CTL", "ATL"]).copy()
+            # Für den 90-Tage-PMC
+            df_pmc = df_act[df_act["Datum"] >= pd.to_datetime(start_90d)].dropna(subset=["CTL", "ATL"]).copy()
             if not df_pmc.empty:
                 df_pmc["TSB"] = df_pmc["CTL"] - df_pmc["ATL"]
-                # Aktuellste Werte der jüngsten Aktivität nehmen
                 latest_row = df_pmc.iloc[-1]
                 current_ctl = round(latest_row["CTL"])
                 current_atl = round(latest_row["ATL"])
@@ -147,7 +151,7 @@ with tab1:
                     st.markdown(f"* **{wochentag}:** {ev['Titel']} `({ev['Dauer (Min)']} min)`")
             else:
                 st.write("Keine Google-Kalender-Termine für diese Woche gefunden.")
-                st.caption("Stelle sicher, dass links die geheime '.ics'-Adresse eingetragen ist.")
+                st.caption("Stelle sicher, dass die geheime '.ics'-Adresse in den Secrets/Sidebar hinterlegt ist.")
 
         with col_done:
             st.markdown("#### ✅ Absolviert (Garmin)")
@@ -163,9 +167,48 @@ with tab1:
                 st.write("Diese Woche noch keine Aktivitäten aufgezeichnet.")
         st.markdown("---")
 
-        # 4. Auswertungen & PMC
+        # 4. Jahresbilanz (YTD) & Auswertungen
         if not df_act.empty:
-            st.subheader("📊 Auswertung & Formaufbau")
+            df_year = df_act[df_act["Datum"].dt.year == today.year]
+            total_year_hours = round(df_year["Dauer_h"].sum(), 1)
+            total_year_tss = int(df_year["TSS"].sum())
+
+            st.subheader(f"🏆 Jahresbilanz {today.year}")
+            y_col1, y_col2 = st.columns(2)
+            y_col1.metric(f"Gesamt-Trainingszeit {today.year}", f"{total_year_hours} h")
+            y_col2.metric(f"Gesamt-TSS {today.year}", f"{total_year_tss:,}".replace(",", "."))
+
+            # Sportarten-Aufschlüsselung laufendes Jahr
+            sport_year = df_year.groupby("Typ").agg(
+                Stunden=("Dauer_h", lambda x: round(x.sum(), 1)),
+                TSS=("TSS", lambda x: int(x.sum())),
+                Einheiten=("Typ", "count")
+            ).reset_index().sort_values("Stunden", ascending=False)
+
+            col_ytab, col_ychart = st.columns([1, 1])
+            with col_ytab:
+                st.markdown("**Sportarten im Jahresverlauf:**")
+                st.dataframe(
+                    sport_year.rename(columns={"Typ": "Sportart"}), 
+                    hide_index=True, 
+                    use_container_width=True
+                )
+            with col_ychart:
+                fig_year = go.Figure(go.Pie(
+                    labels=sport_year["Typ"], 
+                    values=sport_year["Stunden"], 
+                    hole=0.4,
+                    textinfo="label+value"
+                ))
+                fig_year.update_layout(
+                    title=f"Stundenverteilung {today.year}", 
+                    height=260, 
+                    margin=dict(l=0, r=0, t=30, b=0)
+                )
+                st.plotly_chart(fig_year, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("📊 Kurzzeit-Auswertung & Formaufbau")
             
             # KPIs letzte 7 Tage
             last_7d = df_act[df_act["Datum"] >= pd.to_datetime(today - timedelta(days=7))]
@@ -182,7 +225,7 @@ with tab1:
                     text=[f"{v} h" for v in sport_split["Dauer_h"]], textposition="auto",
                     marker_color=["#3498db", "#2ecc71", "#e67e22", "#9b59b6"]
                 ))
-                fig_bar.update_layout(title="Sportarten (7T)", yaxis_title="Stunden", template="plotly_white", height=320, margin=dict(l=0, r=0, t=30, b=0))
+                fig_bar.update_layout(title="Sportarten (letzte 7T)", yaxis_title="Stunden", template="plotly_white", height=320, margin=dict(l=0, r=0, t=30, b=0))
                 st.plotly_chart(fig_bar, use_container_width=True)
 
             with col_chart2:
